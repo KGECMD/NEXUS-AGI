@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Nexus AGI</title>
+<style>
+body {margin:0;font-family:Arial,sans-serif;background:#0a0a0a;color:white;display:flex;flex-direction:column;height:100vh;}
+header {background:#111;padding:15px;text-align:center;font-weight:bold;font-size:20px;border-bottom:1px solid #222;}
+#chat {flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;}
+.message {max-width:70%;padding:12px;margin-bottom:10px;border-radius:12px;word-wrap:break-word;line-height:1.4;}
+.user {align-self:flex-end;background:#4fc3f7;color:#000;}
+.ai {align-self:flex-start;background:#333;color:#fff;}
+.controls {display:flex;padding:10px;background:#111;gap:10px;}
+input {flex:1;padding:12px;border-radius:6px;border:none;font-size:15px;background:#222;color:white;}
+button {padding:12px;border-radius:6px;border:none;background:#4fc3f7;color:#000;font-weight:bold;cursor:pointer;}
+button:hover {opacity:0.9;}
+</style>
+</head>
+<body>
+<header>Nexus AGI Smart Chat</header>
+<div id="chat"></div>
+<div class="controls">
+<input id="prompt" placeholder="Type your message..." />
+<button onclick="sendMessage()">Send</button>
+</div>
+
+<script>
+// ===== Configuration =====
+const API_KEY = your api key";
+const persona = {name:"Nexus AGI", creator:"Kayan Erkama"};
+let memory = JSON.parse(localStorage.getItem("nexus_memory")) || [];
+let dataset = JSON.parse(localStorage.getItem("nexus_dataset")) || [];
+let memorySummary = localStorage.getItem("nexus_summary") || "";
+
+// ===== Storage =====
+function saveMemory(){localStorage.setItem("nexus_memory", JSON.stringify(memory));}
+function saveDataset(){localStorage.setItem("nexus_dataset", JSON.stringify(dataset));}
+function saveSummary(){localStorage.setItem("nexus_summary", memorySummary);}
+
+// ===== Logging =====
+const chatDiv=document.getElementById("chat");
+function addMessage(text,cls){
+    const div=document.createElement("div");
+    div.className="message "+cls;
+    div.innerText=text;
+    chatDiv.appendChild(div);
+    chatDiv.scrollTop=chatDiv.scrollHeight;
+}
+
+// ===== DuckDuckGo =====
+async function fetchDDG(query){
+    try{
+        const res=await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1`);
+        const data=await res.json();
+        if(data.AbstractText) return data.AbstractText;
+        if(data.RelatedTopics && data.RelatedTopics.length>0 && data.RelatedTopics[0].Text) return data.RelatedTopics[0].Text;
+        return "";
+    }catch(e){return "";}
+}
+
+// ===== Teacher Guidance =====
+async function distillTeacher(prompt){
+    try{
+        const res = await fetch("https://openrouter.ai/api/v1/chat/completions",{
+            method:"POST",
+            headers:{"Authorization":"Bearer "+API_KEY,"Content-Type":"application/json"},
+            body:JSON.stringify({model:"openai/gpt-4o-mini",messages:[{role:"user",content:prompt}]})
+        });
+        const data = await res.json();
+        return data.choices[0].message.content;
+    }catch(e){return "";}
+}
+
+// ===== Summarize Old Memory =====
+async function summarizeMemory(){
+    if(memory.length < 10) return; // Only summarize if memory is long
+    const olderMemory = memory.slice(0, memory.length-5);
+    let summaryPrompt = "Summarize the key points of these past conversations briefly:\n";
+    olderMemory.forEach(m=>{summaryPrompt += `User: ${m.user}\n${persona.name}: ${m.ai}\n`;});
+    const summary = await distillTeacher(summaryPrompt);
+    if(summary) memorySummary = summary;
+    // Remove summarized memory
+    memory = memory.slice(-5);
+    saveMemory();
+    saveSummary();
+}
+
+// ===== Self-learning Response =====
+async function sendMessage(){
+    let prompt = document.getElementById("prompt").value.trim();
+    if(!prompt) return;
+    document.getElementById("prompt").value = "";
+    addMessage(prompt,"user");
+
+    // Update memory summary if needed
+    await summarizeMemory();
+
+    // Last 5 memory entries + summary as context
+    let memoryText = memorySummary + "\n" + memory.slice(-5).map(m=>`User: ${m.user}\n${persona.name}: ${m.ai}`).join("\n");
+    let fullPrompt = `You are ${persona.name}, created by ${persona.creator}.\n${memoryText}\nUser: ${prompt}`;
+
+    // DuckDuckGo info
+    const ddgInfo = await fetchDDG(prompt);
+    if(ddgInfo) fullPrompt += "\nDuckDuckGo info: " + ddgInfo;
+
+    // Teacher guidance
+    const teacherAnswer = await distillTeacher(fullPrompt);
+
+    // Decide response: mix memory and guidance
+    let aiResponse = "";
+    if(teacherAnswer){
+        aiResponse = `Based on memory and guidance:\n${teacherAnswer}`;
+    } else if(memoryText){
+        aiResponse = `Based on memory:\nI remember our past conversations. Let's continue...`;
+    } else {
+        aiResponse = `Hello! I am ${persona.name}. Let's chat.`;
+    }
+
+    addMessage(aiResponse,"ai");
+
+    // Save new memory
+    memory.push({user: prompt, ai: aiResponse});
+    dataset.push({x:prompt, y:aiResponse});
+    saveMemory();
+    saveDataset();
+}
+</script>
+</body>
+</html>
